@@ -1,0 +1,1 @@
+"""CoverQuery package."""

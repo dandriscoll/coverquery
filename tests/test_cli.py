@@ -1,0 +1,107 @@
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from coverquery.cli import (
+    _build_parser,
+    _collect_files,
+    _handle_init,
+    _run_tests,
+    _snapshot_changed,
+)
+from coverquery.config import Config
+
+
+def test_snapshot_changed_detects_updates(tmp_path: Path) -> None:
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("one", encoding="utf-8")
+
+    initial = _collect_files([tmp_path])
+    file_path.write_text("two", encoding="utf-8")
+    current = _collect_files([tmp_path])
+
+    assert _snapshot_changed(initial, current)
+
+
+def test_run_tests_creates_run_metadata(tmp_path: Path) -> None:
+    def fake_run(cmd, cwd=None, capture_output=False, text=False, env=None, shell=False):
+        if "--collect-only" in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="tests/test_sample.py::test_one\n",
+                stderr="",
+            )
+        if "coverage" in cmd and "xml" in cmd:
+            output_index = cmd.index("-o") + 1
+            Path(cmd[output_index]).write_text("<coverage />", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    config = Config(
+        project_root=tmp_path,
+        tests_command="pytest",
+        test_framework="pytest",
+        coverage_paths=(),
+        watch_paths=(tmp_path,),
+        poll_interval=0.1,
+        opensearch={},
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    try:
+        exit_code = _run_tests(config)
+    finally:
+        monkeypatch.undo()
+
+    assert exit_code == 0
+    runs_dir = tmp_path / ".coverquery" / "runs"
+    run_dirs = [path for path in runs_dir.iterdir() if path.is_dir()]
+    assert len(run_dirs) == 1
+    run_dir = run_dirs[0]
+    assert (run_dir / "run.json").exists()
+    coverage_files = list(run_dir.rglob("coverage.xml"))
+    assert coverage_files
+
+
+def test_init_creates_config(tmp_path: Path) -> None:
+    args = type(
+        "Args",
+        (),
+        {"config": "coverquery.yaml", "project_root": str(tmp_path)},
+    )()
+
+    exit_code = _handle_init(args)
+
+    assert exit_code == 0
+    config_path = tmp_path / "coverquery.yaml"
+    assert config_path.exists()
+    contents = config_path.read_text(encoding="utf-8")
+    assert "test_framework" in contents
+    assert "opensearch" in contents
+    assert f'index: "{tmp_path.name}"' in contents
+
+
+def test_init_refuses_existing_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "coverquery.yaml"
+    config_path.write_text("tests_command: \"pytest\"", encoding="utf-8")
+
+    args = type(
+        "Args",
+        (),
+        {"config": "coverquery.yaml", "project_root": str(tmp_path)},
+    )()
+
+    exit_code = _handle_init(args)
+
+    assert exit_code == 1
+
+
+def test_test_subcommand_is_available() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["test"])
+
+    assert args.command == "test"
+    assert callable(args.func)

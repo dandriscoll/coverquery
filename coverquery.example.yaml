@@ -1,0 +1,11 @@
+# CoverQuery configuration
+test_framework: "pytest"
+watch_paths:
+  - .
+poll_interval: 2.0
+opensearch:
+  host: "localhost"
+  port: 9200
+  username: ""
+  password: ""
+  index: "reponame"
