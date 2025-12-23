@@ -8,4 +8,4 @@ opensearch:
   port: 9200
   username: ""
   password: ""
-  index: "reponame"
+  index: "coverquery-reponame"
