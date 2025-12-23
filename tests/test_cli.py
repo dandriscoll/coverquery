@@ -9,6 +9,8 @@ import pytest
 from coverquery.cli import (
     _build_parser,
     _collect_files,
+    _find_runs,
+    _handle_index,
     _handle_init,
     _run_tests,
     _snapshot_changed,
@@ -166,3 +168,92 @@ def test_coverquery_runs_repo_tests_and_writes_coverage(tmp_path: Path) -> None:
     assert coverage_files
 
     shutil.rmtree(repo_root / ".coverquery", ignore_errors=True)
+
+
+def test_index_subcommand_is_available() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["index"])
+
+    assert args.command == "index"
+    assert callable(args.func)
+    assert args.run is None
+    assert args.all is False
+
+
+def test_index_subcommand_accepts_run_flag() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["index", "--run", "20241225T120000Z"])
+
+    assert args.run == "20241225T120000Z"
+
+
+def test_index_subcommand_accepts_all_flag() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["index", "--all"])
+
+    assert args.all is True
+
+
+def test_find_runs_returns_empty_when_no_runs(tmp_path: Path) -> None:
+    assert _find_runs(tmp_path) == []
+
+
+def test_find_runs_returns_sorted_runs(tmp_path: Path) -> None:
+    runs_dir = tmp_path / ".coverquery" / "runs"
+    runs_dir.mkdir(parents=True)
+
+    # Create runs out of order
+    (runs_dir / "20241225T120000Z").mkdir()
+    (runs_dir / "20241225T120000Z" / "run.json").write_text("{}", encoding="utf-8")
+
+    (runs_dir / "20241224T100000Z").mkdir()
+    (runs_dir / "20241224T100000Z" / "run.json").write_text("{}", encoding="utf-8")
+
+    (runs_dir / "20241226T140000Z").mkdir()
+    (runs_dir / "20241226T140000Z" / "run.json").write_text("{}", encoding="utf-8")
+
+    runs = _find_runs(tmp_path)
+
+    assert len(runs) == 3
+    assert runs[0].name == "20241224T100000Z"
+    assert runs[1].name == "20241225T120000Z"
+    assert runs[2].name == "20241226T140000Z"
+
+
+def test_find_runs_ignores_dirs_without_run_json(tmp_path: Path) -> None:
+    runs_dir = tmp_path / ".coverquery" / "runs"
+    runs_dir.mkdir(parents=True)
+
+    (runs_dir / "20241225T120000Z").mkdir()
+    # No run.json created
+
+    (runs_dir / "20241224T100000Z").mkdir()
+    (runs_dir / "20241224T100000Z" / "run.json").write_text("{}", encoding="utf-8")
+
+    runs = _find_runs(tmp_path)
+
+    assert len(runs) == 1
+    assert runs[0].name == "20241224T100000Z"
+
+
+def test_handle_index_fails_when_no_runs(tmp_path: Path) -> None:
+    config_path = tmp_path / "coverquery.yaml"
+    config_path.write_text(
+        'test_framework: "pytest"\nopensearch:\n  host: "localhost"\n  port: 9200\n  index: "test"',
+        encoding="utf-8",
+    )
+
+    args = type(
+        "Args",
+        (),
+        {
+            "config": str(config_path),
+            "project_root": str(tmp_path),
+            "run": None,
+            "all": False,
+        },
+    )()
+
+    exit_code = _handle_index(args)
+
+    assert exit_code == 1

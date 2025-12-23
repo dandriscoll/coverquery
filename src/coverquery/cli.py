@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .config import Config, load_config
+from .indexer import index_run, IndexerError
 
 COVERQUERY_DIRNAME = ".coverquery"
 RUNS_DIRNAME = "runs"
@@ -311,12 +312,59 @@ def _handle_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_runs(project_root: Path) -> list[Path]:
+    """Return all run directories sorted by name (oldest first)."""
+    runs_dir = project_root / COVERQUERY_DIRNAME / RUNS_DIRNAME
+    if not runs_dir.exists():
+        return []
+    return sorted(
+        [d for d in runs_dir.iterdir() if d.is_dir() and (d / "run.json").exists()]
+    )
+
+
+def _handle_index(args: argparse.Namespace) -> int:
+    config = _load_config_from_args(args)
+    project_root = config.project_root
+
+    if args.run:
+        run_dir = project_root / COVERQUERY_DIRNAME / RUNS_DIRNAME / args.run
+        if not run_dir.exists():
+            print(f"Run directory not found: {run_dir}", file=sys.stderr)
+            return 1
+        runs_to_index = [run_dir]
+    elif args.all:
+        runs_to_index = _find_runs(project_root)
+        if not runs_to_index:
+            print("No runs found to index.", file=sys.stderr)
+            return 1
+    else:
+        runs = _find_runs(project_root)
+        if not runs:
+            print("No runs found. Run tests first with 'coverquery run'.", file=sys.stderr)
+            return 1
+        runs_to_index = [runs[-1]]
+
+    indexed_count = 0
+    for run_dir in runs_to_index:
+        try:
+            index_run(config, run_dir)
+            print(f"Indexed {run_dir.name}")
+            indexed_count += 1
+        except IndexerError as exc:
+            print(f"Failed to index {run_dir.name}: {exc}", file=sys.stderr)
+            if not args.all:
+                return 1
+
+    print(f"Indexed {indexed_count} run(s).")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coverquery")
     parser.add_argument(
         "--config",
         default=DEFAULT_CONFIG_NAME,
-        help="Path to the CoverQuery JSON config file.",
+        help="Path to the CoverQuery YAML config file.",
     )
     parser.add_argument(
         "--project-root",
@@ -340,6 +388,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
     init = subparsers.add_parser("init", help="Write a default config file.")
     init.set_defaults(func=_handle_init)
+
+    index = subparsers.add_parser(
+        "index",
+        help="Index coverage data from runs into OpenSearch.",
+    )
+    index.add_argument(
+        "--run",
+        metavar="RUN_NAME",
+        help="Index a specific run by its timestamp name (e.g., 20241225T120000Z).",
+    )
+    index.add_argument(
+        "--all",
+        action="store_true",
+        help="Index all available runs.",
+    )
+    index.set_defaults(func=_handle_index)
 
     return parser
 
