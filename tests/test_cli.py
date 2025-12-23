@@ -1,3 +1,5 @@
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -105,3 +107,62 @@ def test_test_subcommand_is_available() -> None:
 
     assert args.command == "test"
     assert callable(args.func)
+
+
+def test_coverquery_runs_repo_tests_and_writes_coverage(tmp_path: Path) -> None:
+    if os.environ.get("COVERQUERY_SKIP_SELF_TEST") == "1":
+        pytest.skip("Skipping recursive coverquery test invocation.")
+
+    try:
+        import coverage  # noqa: F401
+    except ImportError:
+        pytest.skip("coverage module not available")
+
+    repo_root = Path(__file__).resolve().parents[1]
+    config_path = tmp_path / "coverquery.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'test_framework: "pytest"',
+                "watch_paths:",
+                "  - .",
+                "poll_interval: 2.0",
+                "opensearch:",
+                '  host: "localhost"',
+                "  port: 9200",
+                '  username: ""',
+                '  password: ""',
+                f'  index: "{repo_root.name}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["COVERQUERY_SKIP_SELF_TEST"] = "1"
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "coverquery",
+            "--project-root",
+            str(repo_root),
+            "--config",
+            str(config_path),
+            "test",
+        ],
+        cwd=repo_root,
+        env=env,
+    )
+
+    assert run.returncode == 0
+
+    runs_dir = repo_root / ".coverquery" / "runs"
+    run_dirs = [path for path in runs_dir.iterdir() if path.is_dir()]
+    assert run_dirs
+    latest_run = max(run_dirs, key=lambda path: path.stat().st_mtime)
+    coverage_files = list((latest_run / "tests").rglob("coverage.xml"))
+    assert coverage_files
+
+    shutil.rmtree(repo_root / ".coverquery", ignore_errors=True)

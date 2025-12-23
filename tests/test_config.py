@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import textwrap
+
 import pytest
 
 from coverquery import config as config_module
@@ -8,7 +10,7 @@ from coverquery.config import load_config
 
 
 def _write_yaml(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
+    path.write_text(textwrap.dedent(content).strip() + "\n", encoding="utf-8")
 
 
 @pytest.mark.skipif(config_module.yaml is None, reason="PyYAML not installed")
@@ -25,7 +27,7 @@ def test_load_config_reads_yaml(tmp_path: Path) -> None:
           host: "localhost"
           port: 9200
           index: "coverquery"
-        """.strip(),
+        """,
     )
 
     cfg = load_config(config_path, tmp_path)
