@@ -1,10 +1,12 @@
 """Tests for the MCP server module."""
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 
@@ -20,6 +22,7 @@ from coverquery.mcp_server import (
     query_uncovered_lines,
     run_tests_with_coverage,
 )
+from coverquery.indexer import parse_coverage_xml
 from coverquery.queries import CoverageResult, FileStats, QueryError, TestCoverage
 
 
@@ -355,3 +358,270 @@ class TestIndexCoverageRun:
         assert "error" in result
         assert "available_runs" in result
         assert "20241224T000000Z" in result["available_runs"]
+
+
+class FakeResponse:
+    def __init__(self, status: int, payload: dict[str, Any] | None = None) -> None:
+        self.status = status
+        self._payload = (
+            json.dumps(payload).encode("utf-8") if payload is not None else b""
+        )
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+class FakeOpenSearch:
+    def __init__(self) -> None:
+        self.indices: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        username: str,
+        password: str,
+        data: bytes | None = None,
+    ) -> FakeResponse:
+        parsed = urlparse(url)
+        path = parsed.path.lstrip("/")
+        parts = path.split("/", 1)
+        index_name = parts[0] if parts else ""
+        endpoint = parts[1] if len(parts) > 1 else ""
+
+        if method == "HEAD":
+            return FakeResponse(200 if index_name in self.indices else 404)
+
+        if method == "PUT":
+            self.indices.setdefault(index_name, {})
+            return FakeResponse(200)
+
+        if method == "POST" and endpoint == "_delete_by_query":
+            if index_name not in self.indices:
+                return FakeResponse(404)
+            payload = json.loads(data.decode("utf-8") if data else "{}")
+            term = payload.get("query", {}).get("term", {})
+            commit_hash = term.get("commit_hash")
+            if commit_hash:
+                self.indices[index_name] = {
+                    doc_id: doc
+                    for doc_id, doc in self.indices[index_name].items()
+                    if doc.get("commit_hash") != commit_hash
+                }
+            return FakeResponse(200, {"deleted": 0})
+
+        if method == "POST" and endpoint == "_bulk":
+            self.indices.setdefault(index_name, {})
+            payload = (data or b"").decode("utf-8").strip()
+            if payload:
+                lines = payload.split("\n")
+                for i in range(0, len(lines), 2):
+                    meta = json.loads(lines[i])
+                    doc = json.loads(lines[i + 1])
+                    doc_id = meta["index"]["_id"]
+                    self.indices[index_name][doc_id] = doc
+            return FakeResponse(200, {"errors": False})
+
+        if method == "POST" and endpoint == "_search":
+            payload = json.loads(data.decode("utf-8") if data else "{}")
+            if "aggs" in payload:
+                return FakeResponse(200, {"aggregations": self._aggregate(index_name, payload)})
+            hits = self._search(index_name, payload)
+            return FakeResponse(200, {"hits": {"hits": [{"_source": doc} for doc in hits]}})
+
+        return FakeResponse(404)
+
+    def _search(self, index_name: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        docs = list(self.indices.get(index_name, {}).values())
+        query = payload.get("query", {})
+        filtered = self._filter_docs(docs, query)
+        size = payload.get("size")
+        if isinstance(size, int):
+            return filtered[:size]
+        return filtered
+
+    def _aggregate(self, index_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        docs = list(self.indices.get(index_name, {}).values())
+        query = payload.get("query", {})
+        filtered = self._filter_docs(docs, query)
+        aggs = payload.get("aggs", {})
+        result: dict[str, Any] = {}
+        if "unique_files" in aggs:
+            field = aggs["unique_files"]["terms"]["field"]
+            counts: dict[str, int] = {}
+            for doc in filtered:
+                key = doc.get(field)
+                if key is not None:
+                    counts[str(key)] = counts.get(str(key), 0) + 1
+            result["unique_files"] = {
+                "buckets": [
+                    {"key": key, "doc_count": count}
+                    for key, count in sorted(counts.items())
+                ]
+            }
+        if "unique_tests" in aggs:
+            field = aggs["unique_tests"]["terms"]["field"]
+            counts = {}
+            for doc in filtered:
+                value = doc.get(field)
+                if isinstance(value, list):
+                    for item in value:
+                        counts[item] = counts.get(item, 0) + 1
+                elif value is not None:
+                    counts[str(value)] = counts.get(str(value), 0) + 1
+            result["unique_tests"] = {
+                "buckets": [
+                    {"key": key, "doc_count": count}
+                    for key, count in sorted(counts.items())
+                ]
+            }
+        return result
+
+    def _filter_docs(
+        self,
+        docs: list[dict[str, Any]],
+        query: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not query:
+            return docs
+
+        if "bool" in query:
+            must = query["bool"].get("must", [])
+            return [
+                doc
+                for doc in docs
+                if all(self._match_clause(doc, clause) for clause in must)
+            ]
+
+        if "term" in query:
+            return [doc for doc in docs if self._match_term(doc, query["term"])]
+
+        return docs
+
+    def _match_clause(self, doc: dict[str, Any], clause: dict[str, Any]) -> bool:
+        if "term" in clause:
+            return self._match_term(doc, clause["term"])
+        if "terms" in clause:
+            return self._match_terms(doc, clause["terms"])
+        return True
+
+    def _match_term(self, doc: dict[str, Any], term: dict[str, Any]) -> bool:
+        for field, value in term.items():
+            doc_value = doc.get(field)
+            if isinstance(doc_value, list):
+                if value not in doc_value:
+                    return False
+            elif doc_value != value:
+                return False
+        return True
+
+    def _match_terms(self, doc: dict[str, Any], terms: dict[str, Any]) -> bool:
+        for field, values in terms.items():
+            doc_value = doc.get(field)
+            if isinstance(doc_value, list):
+                if not any(item in doc_value for item in values):
+                    return False
+            elif doc_value not in values:
+                return False
+        return True
+
+
+def test_end_to_end_single_test_run_and_query(tmp_path: Path) -> None:
+    try:
+        import coverage  # noqa: F401
+    except ImportError:
+        pytest.skip("coverage module not available")
+
+    module_path = tmp_path / "app_module.py"
+    module_path.write_text(
+        "\n".join(
+            [
+                "def add(a, b):",
+                "    total = a + b",
+                "    return total",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    test_path = tests_dir / "test_app_module.py"
+    test_path.write_text(
+        "\n".join(
+            [
+                "from app_module import add",
+                "",
+                "def test_add():",
+                "    assert add(1, 2) == 3",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config_path = tmp_path / "coverquery.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'test_framework: "pytest"',
+                "opensearch:",
+                '  host: "localhost"',
+                "  port: 9200",
+                '  index: "coverquery-tests"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    fake = FakeOpenSearch()
+    env = {
+        "COVERQUERY_CONFIG": str(config_path),
+        "COVERQUERY_PROJECT_ROOT": str(tmp_path),
+    }
+
+    with patch.dict(os.environ, env, clear=False):
+        with patch("coverquery.indexer._request", side_effect=fake.request):
+            with patch("coverquery.queries._request", side_effect=fake.request):
+                run_result = run_tests_with_coverage()
+                assert run_result["success"] is True
+
+                runs_dir = tmp_path / ".coverquery" / "runs"
+                run_dirs = [path for path in runs_dir.iterdir() if path.is_dir()]
+                assert len(run_dirs) == 1
+                run_dir = run_dirs[0]
+                run_metadata = json.loads(
+                    (run_dir / "run.json").read_text(encoding="utf-8")
+                )
+                assert len(run_metadata["tests"]) == 1
+
+                coverage_files = list(run_dir.rglob("coverage.xml"))
+                assert len(coverage_files) == 1
+                coverage_data = parse_coverage_xml(coverage_files[0])
+                target_file = next(
+                    (
+                        file_data
+                        for file_data in coverage_data
+                        if Path(file_data["filename"]).name == "app_module.py"
+                    ),
+                    None,
+                )
+                assert target_file is not None
+                covered_line = target_file["covered_lines"][0]
+                nodeid = (
+                    (coverage_files[0].parent / "nodeid")
+                    .read_text(encoding="utf-8")
+                    .strip()
+                )
+
+                index_result = index_coverage_run()
+                assert index_result["success"] is True
+
+                query_result = query_tests_for_line(
+                    target_file["filename"],
+                    covered_line,
+                )
+                assert query_result["found"] is True
+                assert nodeid in query_result["tests"]
