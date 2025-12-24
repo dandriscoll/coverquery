@@ -7,5 +7,5 @@ opensearch:
   host: "localhost"
   port: 9200
   username: "admin"
-  password: "admin"
+  password: "EE5pMuow!"
   index: "coverquery-reponame"

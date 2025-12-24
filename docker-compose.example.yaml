@@ -1,0 +1,39 @@
+services:
+  opensearch:
+    image: opensearchproject/opensearch:latest
+    container_name: opensearch
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=EE5pMuow!
+      - plugins.security.ssl.http.enabled=false
+      - http.cors.enabled=true
+      - http.cors.allow-credentials=true
+      - http.cors.allow-origin=http://localhost:5602
+      - http.cors.allow-methods=OPTIONS,HEAD,GET,POST,PUT,DELETE
+      - http.cors.allow-headers=X-Requested-With,Content-Type,Content-Length,Authorization
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "127.0.0.1:9200:9200"
+      - "127.0.0.1:9600:9600"
+    volumes:
+      - ./opensearch-data:/usr/share/opensearch/data
+    networks:
+      - opensearchnet
+
+  elasticvue:
+    image: cars10/elasticvue:latest
+    container_name: elasticvue
+    ports:
+      - "127.0.0.1:5602:8080"
+    restart: unless-stopped
+    environment:
+      - ELASTICVUE_DEFAULT_URL=http://opensearch:9200
+    networks:
+      - opensearchnet
+
+networks:
+  opensearchnet:
+    driver: bridge
