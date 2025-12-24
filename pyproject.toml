@@ -7,10 +7,11 @@ name = "coverquery"
 version = "0.1.0"
 description = "CoverQuery CLI"
 requires-python = ">=3.10"
-dependencies = ["coverage>=7.0", "pyyaml>=6.0"]
+dependencies = ["coverage>=7.0", "pyyaml>=6.0", "mcp>=1.0"]
 
 [project.scripts]
 coverquery = "coverquery.cli:main"
+coverquery-mcp = "coverquery.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
