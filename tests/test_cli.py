@@ -167,8 +167,6 @@ def test_coverquery_runs_repo_tests_and_writes_coverage(tmp_path: Path) -> None:
     coverage_files = list((latest_run / "tests").rglob("coverage.xml"))
     assert coverage_files
 
-    shutil.rmtree(repo_root / ".coverquery", ignore_errors=True)
-
 
 def test_index_subcommand_is_available() -> None:
     parser = _build_parser()
