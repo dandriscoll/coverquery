@@ -97,6 +97,43 @@ def _file_fingerprint(path: Path) -> tuple[int, int, str]:
     return (stat.st_mtime_ns, stat.st_size, hasher.hexdigest())
 
 
+def get_commit_hash(project_root: Path) -> str:
+    """Get the current git commit hash, or 'working' if there are uncommitted changes.
+
+    Returns 'working' if:
+    - Not in a git repository
+    - There are staged or unstaged changes
+    - There are untracked files in tracked directories
+    """
+    try:
+        # Check if we're in a git repo and get HEAD commit
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return "working"
+
+        commit_hash = result.stdout.strip()
+
+        # Check for uncommitted changes (staged or unstaged)
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        if status_result.returncode != 0 or status_result.stdout.strip():
+            return "working"
+
+        return commit_hash
+    except FileNotFoundError:
+        # git not installed
+        return "working"
+
+
 def _collect_files(paths: Iterable[Path]) -> dict[Path, tuple[int, int, str]]:
     snapshot: dict[Path, tuple[int, int, str]] = {}
     for base in paths:
@@ -200,6 +237,9 @@ def _run_pytest_with_coverage(
     safe_name = _sanitize_nodeid(nodeid)
     test_dir = output_root / f"{index:05d}_{safe_name}"
     test_dir.mkdir(parents=True, exist_ok=True)
+
+    # Store the original nodeid for later lookup during indexing
+    (test_dir / "nodeid").write_text(nodeid, encoding="utf-8")
 
     coverage_file = test_dir / ".coverage"
     coverage_xml = test_dir / "coverage.xml"
@@ -318,7 +358,7 @@ def _find_runs(project_root: Path) -> list[Path]:
     if not runs_dir.exists():
         return []
     return sorted(
-        [d for d in runs_dir.iterdir() if d.is_dir() and (d / "run.json").exists()]
+        [d for d in runs_dir.iterdir() if d.is_dir() and list(d.rglob("coverage.xml"))]
     )
 
 
@@ -344,11 +384,12 @@ def _handle_index(args: argparse.Namespace) -> int:
             return 1
         runs_to_index = [runs[-1]]
 
+    commit_hash = get_commit_hash(project_root)
     indexed_count = 0
     for run_dir in runs_to_index:
         try:
-            index_run(config, run_dir)
-            print(f"Indexed {run_dir.name}")
+            index_run(config, run_dir, commit_hash)
+            print(f"Indexed {run_dir.name} (commit: {commit_hash[:8] if commit_hash != 'working' else 'working'})")
             indexed_count += 1
         except IndexerError as exc:
             print(f"Failed to index {run_dir.name}: {exc}", file=sys.stderr)

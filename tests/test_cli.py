@@ -202,15 +202,18 @@ def test_find_runs_returns_sorted_runs(tmp_path: Path) -> None:
     runs_dir = tmp_path / ".coverquery" / "runs"
     runs_dir.mkdir(parents=True)
 
-    # Create runs out of order
-    (runs_dir / "20241225T120000Z").mkdir()
-    (runs_dir / "20241225T120000Z" / "run.json").write_text("{}", encoding="utf-8")
+    # Create runs out of order with coverage.xml files
+    run1 = runs_dir / "20241225T120000Z" / "tests" / "00001_test_a"
+    run1.mkdir(parents=True)
+    (run1 / "coverage.xml").write_text("<coverage />", encoding="utf-8")
 
-    (runs_dir / "20241224T100000Z").mkdir()
-    (runs_dir / "20241224T100000Z" / "run.json").write_text("{}", encoding="utf-8")
+    run2 = runs_dir / "20241224T100000Z" / "tests" / "00001_test_b"
+    run2.mkdir(parents=True)
+    (run2 / "coverage.xml").write_text("<coverage />", encoding="utf-8")
 
-    (runs_dir / "20241226T140000Z").mkdir()
-    (runs_dir / "20241226T140000Z" / "run.json").write_text("{}", encoding="utf-8")
+    run3 = runs_dir / "20241226T140000Z" / "tests" / "00001_test_c"
+    run3.mkdir(parents=True)
+    (run3 / "coverage.xml").write_text("<coverage />", encoding="utf-8")
 
     runs = _find_runs(tmp_path)
 
@@ -220,15 +223,16 @@ def test_find_runs_returns_sorted_runs(tmp_path: Path) -> None:
     assert runs[2].name == "20241226T140000Z"
 
 
-def test_find_runs_ignores_dirs_without_run_json(tmp_path: Path) -> None:
+def test_find_runs_ignores_dirs_without_coverage(tmp_path: Path) -> None:
     runs_dir = tmp_path / ".coverquery" / "runs"
     runs_dir.mkdir(parents=True)
 
     (runs_dir / "20241225T120000Z").mkdir()
-    # No run.json created
+    # No coverage.xml created
 
-    (runs_dir / "20241224T100000Z").mkdir()
-    (runs_dir / "20241224T100000Z" / "run.json").write_text("{}", encoding="utf-8")
+    run2 = runs_dir / "20241224T100000Z" / "tests" / "00001_test_a"
+    run2.mkdir(parents=True)
+    (run2 / "coverage.xml").write_text("<coverage />", encoding="utf-8")
 
     runs = _find_runs(tmp_path)
 
